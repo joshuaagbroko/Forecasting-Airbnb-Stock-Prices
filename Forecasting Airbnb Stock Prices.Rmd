@@ -1,0 +1,340 @@
+---
+title: "Forecasting Airbnb Stock Prices"
+author: "Joshua Agbroko"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Overview
+This project aims to forecast Airbnb stock prices using historical data from 2010 to 2024. The dataset contains valuable information such as opening price, closing price, high, low, and volume traded for each trading day. The objectives of the project include trend analysis, seasonality analysis, and forecasting, with the ultimate goal of informing investment decisions and strategic planning.
+
+## Dataset
+The dataset contains historical stock data for Airbnb (ABNB) from 2010 to 2024. The data includes information such as opening price, closing price, high, low, and volume traded for each trading day during this period.
+The dataset provides valuable insights into the performance of Airbnb's stock over time, including trends, volatility, and key milestones. It can be used for various analytical purposes such as trend analysis, correlation studies, and forecasting.
+
+#### Columns
+* Date: The date of the trading day.
+* Open: The opening price of the stock.
+* High: The highest price of the stock during the trading day.
+* Low: The lowest price of the stock during the trading day.
+* Close: The closing price of the stock.
+* Adj Close: The adjusted closing price of the stock.
+* Volume: The volume of shares traded during the trading day.
+
+
+```{r}
+# loading required libraries  and dataset
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(TTR)
+library(zoo)
+library(prophet)
+library(reshape2)
+
+airbnb_stock <- read_csv("abnb_stock_data.csv")
+
+```
+
+## Exploratory Data Analysis
+
+### Summary Statistics:
+Computing summary statistics to understand the central tendency, dispersion, and shape of the data.
+```{r}
+summary(airbnb_stock)
+```
+
+The summary statistics for the Airbnb stock dataset reveal a comprehensive overview of the stock's performance over the period from December 10, 2020, to February 29, 2024. The dataset includes information on opening, high, low, and closing prices, with median closing prices at $139.42 and a wide range from $82.49 to $216.84. Trading volume varies significantly, with a mean of approximately 6,489,790 shares and a maximum of 74,786,400 shares traded. Temporal variables such as year, month, quarter, and day of the week provide insights into the distribution of observations over time. Lag variables capture previous day's closing price and volume, while rolling statistics offer smoothed estimates of mean and standard deviation of closing prices.These insights lay the groundwork for further analysis and forecasting of Airbnb stock prices.
+
+*#### Data Structure:* 
+
+Examining the structure of the dataset to understand variable types and ensure they're interpreted correctly.
+``` {r}
+str(airbnb_stock)
+```
+
+
+*#### Time Series Visualization:* 
+
+Create time series plots to visualize the trends, seasonality, and outliers in the data.
+```{r}
+# Time series plot of closing prices
+ggplot(airbnb_stock, aes(x = Date, y = Close)) +
+  geom_line() +
+  labs(title = "Airbnb Stock Closing Prices Over Time",
+       x = "Date", y = "Closing Price")
+```
+
+
+From the visual above, it's evident that the closing stock prices experienced a pronounced decline around mid-2022. However, there has been a gradual yet consistent uptrend in prices observed from that point onward, extending into the year 2024.
+
+#### Exploring the distributions of numerical variables such as opening price, closing price, and volume traded.
+```{r}
+# Histogram of closing prices
+ggplot(airbnb_stock, aes(x = Close)) +
+  geom_histogram(binwidth = 10, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Airbnb Stock Closing Prices",
+       x = "Closing Price", y = "Frequency")
+```
+
+The closing stock prices of airbnb seems to be majorly distributed between $120 - $150 over the past couple of years.
+
+
+#### Identifying outliers and comparing the distribution of numerical variables across different categories
+
+```{r}
+# Boxplot of closing prices by year
+ggplot(airbnb_stock, aes(x = factor(year(Date)), y = Close)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = "Boxplot of Airbnb Stock Closing Prices by Year",
+       x = "Year", y = "Closing Price")
+```
+
+#### Correlation Analysis: 
+Computing correlations between numerical variables to identify relationships.
+```{r}
+cor_matrix <- cor(select(airbnb_stock, -Date))
+cor_matrix
+
+# Heatmap of correlations
+ggplot(data = melt(cor_matrix), aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "skyblue", high = "red") +
+  labs(title = "Correlation Heatmap", x = "", y = "")
+```
+
+### Feature Engineering 
+With a focus on trend analysis, seasonality analysis, and forecasting, feature engineering becomes crucial for extracting meaningful insights and building accurate forecasting models. Here are the feature engineering techniques we will be using:   
+
+* Date Features: Extracting additional date-related features from the 'Date' column that could capture seasonality and trends. 
+* Lag Features: Creating lag features to capture the historical behavior of stock prices. These features can help the model learn from past trends and patterns. 
+
+* Rolling Statistics: Calculating rolling statistics such as moving averages and standard deviations to smooth out noise and identify underlying trends. 
+
+* Price Differences: Computing price differences between consecutive days to capture daily changes in stock prices. 
+
+* Percentage Changes: Calculating percentage changes in stock prices to normalize the data and focus on relative changes rather than absolute values.
+
+* Moving Averages: Computing various moving averages (i.e., simple moving average, exponential moving average) to identify trends and smooth out fluctuations in stock prices.
+
+* Seasonal Dummy Variables: Creating dummy variables to represent different seasons or quarters if seasonality exhibits significant variation across different periods of the year.
+
+
+```{r}
+### Date features
+#### Converting 'Date' column to Date format
+
+airbnb_stock$Date <- as.Date(airbnb_stock$Date)
+
+#### Extracting year, month, quarter, and day of the week
+airbnb_stock$Year <- year(airbnb_stock$Date)
+airbnb_stock$Month <- month(airbnb_stock$Date)
+airbnb_stock$Quarter <- quarter(airbnb_stock$Date)
+airbnb_stock$DayOfWeek <- weekdays(airbnb_stock$Date)
+
+### Lag features
+#### Create lagged features for closing prices and volume
+airbnb_stock$Lag1_Close <- lag(airbnb_stock$Close)
+airbnb_stock$Lag2_Close <- lag(airbnb_stock$Close, 2)
+airbnb_stock$Lag1_Volume <- lag(airbnb_stock$Volume)
+airbnb_stock$Lag2_Volume <- lag(airbnb_stock$Volume, 2)
+
+### Rolling Statistics
+#### Calculate rolling mean of closing prices over a 7-day window
+airbnb_stock$Rolling_Mean_Close <- rollmean(airbnb_stock$Close, k = 7, fill = NA)
+#### Calculate rolling standard deviation of closing prices over a 7-day window
+airbnb_stock$Rolling_SD_Close <- rollapply(airbnb_stock$Close, width = 7, FUN = sd, fill = NA)
+
+
+### Price Differences
+#### Calculate price difference between today's closing price and yesterday's closing price
+airbnb_stock$Price_Diff <- c(NA, diff(airbnb_stock$Close))
+
+### Percentage Changes 
+# Calculating percentage change in closing price from the previous day
+airbnb_stock <- airbnb_stock %>%
+  mutate(Percent_Change = c(NA, diff(Close) / lag(Close))[-1])
+
+### moving Averages
+#### Calculate simple moving average of closing prices over a 7-day window
+airbnb_stock$SMA_7 <- SMA(airbnb_stock$Close, n = 7)
+
+#### Calculate exponential moving average of closing prices over a 7-day window
+airbnb_stock$EMA_7 <- EMA(airbnb_stock$Close, n = 7)
+
+### seasonal dummy variables 
+#### Creating dummy variables for quarters (example)
+airbnb_stock$Q1 <- ifelse(airbnb_stock$Quarter == 1, 1, 0)
+airbnb_stock$Q2 <- ifelse(airbnb_stock$Quarter == 2, 1, 0)
+airbnb_stock$Q3 <- ifelse(airbnb_stock$Quarter == 3, 1, 0)
+airbnb_stock$Q4 <- ifelse(airbnb_stock$Quarter == 4, 1, 0)
+
+```
+
+## Trend Analysis
+
+Trend analysis involves examining the overall direction and pattern of changes in a dataset over time. In the context of Airbnb stock data, trend analysis will help us identify long-term trends in stock prices. By performing trend analysis, you'll gain insights into the overall behavior of Airbnb stock prices over time, which can inform forecasting models and investment decisions. 
+
+```{r}
+### Plotting closing prices over time 
+## Time series plot of closing prices
+ggplot(airbnb_stock, aes(x = Date, y = Close)) +
+  geom_line() +
+  labs(title = "Airbnb Stock Closing Prices Over Time",
+       x = "Date", y = "Closing Price")
+```
+
+```{r}
+### Plotting Moving averages
+# Calculate 30-day simple moving average (SMA)
+airbnb_stock$SMA_30 <- SMA(airbnb_stock$Close, n = 30)
+
+# Calculate 30-day exponential moving average (EMA)
+airbnb_stock$EMA_30 <- EMA(airbnb_stock$Close, n = 30)
+
+# Plot closing prices and moving averages
+ggplot(airbnb_stock, aes(x = Date)) +
+  geom_line(aes(y = Close), color = "blue", alpha = 0.5) +
+  geom_line(aes(y = SMA_30), color = "red") +
+  geom_line(aes(y = EMA_30), color = "green") +
+  labs(title = "Airbnb Stock Closing Prices and Moving Averages",
+       x = "Date", y = "Price") +
+  scale_color_manual(values = c("blue", "red", "green"),
+                     labels = c("Close", "SMA(30)", "EMA(30)")) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10)) +
+  annotate("text", x = as.Date("2023-01-01"), y = max(airbnb_stock$Close), 
+           label = "Original Closing Prices (Blue)", color = "blue", size = 4) +
+  annotate("text", x = as.Date("2023-01-01"), y = max(airbnb_stock$Close) - 5, 
+           label = "30-day Simple Moving Average (Red)", color = "red", size = 4) +
+  annotate("text", x = as.Date("2023-01-01"), y = max(airbnb_stock$Close) - 10, 
+           label = "30-day Exponential Moving Average (Green)", color = "green", size = 4)
+```           
+           
+
+
+
+## Seasonality Analysis
+
+Seasonality analysis involves identifying and analyzing recurring patterns or fluctuations in a dataset that occur at regular intervals, such as daily, weekly, monthly, or yearly cycles. In the context of Airbnb stock data, seasonality analysis can help us understand if there are any consistent seasonal
+trends in stock prices.
+
+### Visualizing Seasonal Patterns:
+
+We'll Start by visualizing the average closing prices for each day of each month
+and each quarter to identify any recurring patterns.
+
+```{r Closing Prices per Month}
+### Extracting the month from Date
+airbnb_stock$Month <- month(airbnb_stock$Date, label = TRUE)
+
+# Calculating the average closing prices for each month
+avg_price_by_month <- airbnb_stock %>% 
+  group_by(Month) %>% 
+  summarize(Avg_Close = mean(Close, na.rm = TRUE))
+
+# Plotting the average closing prices by month
+ggplot(avg_price_by_month, aes(x = Month, y = Avg_Close, fill = Month)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  labs(title = "Average Airbnb Stock Closing Prices by Month",
+       x = "Month", y = "Average Closing Price") +
+  scale_fill_manual(values = rep(c("#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900", "#FF9900"), 2),
+                    guide = FALSE) +  # Custom color palette for months
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.title = element_text(size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Closing Prices per Quarter}
+# Extract quarter from Date
+airbnb_stock$Quarter <- quarter(airbnb_stock$Date)
+
+# Calculate average closing prices for each quarter
+
+avg_price_by_quarter <- airbnb_stock %>% 
+  group_by(Quarter) %>% 
+  summarize(Avg_Close = mean(Close, na.rm = TRUE))
+
+# Plot average closing prices by quarter
+ggplot(avg_price_by_quarter, aes(x = factor(Quarter), y = Avg_Close, fill = factor(Quarter))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  labs(title = "Average Airbnb Stock Closing Prices by Quarter",
+       x = "Quarter", y = "Average Closing Price") +
+  scale_fill_manual(values = rep(c("#3366CC", "#DC3912", "#FF9900", "#109618"), 2),
+                    guide = FALSE) +  # Custom color palette for quarters
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.title = element_text(size = 14),
+        axis.text.x = element_text(angle = 0, hjust = 0.5))
+```
+
+
+## Forecasting the Airbnb Stock Prices for the next Year
+
+To forecast Airbnb stock prices for the next year, we will be using the Prophet forecasting model developed by Facebook. Prophet is a powerful tool for time series forecasting that is particularly well-suited for datasets with strong seasonal patterns and multiple seasonality. The forecast horizon for the model was set to predict the next 365 days of Airbnb stock prices.
+
+```{r}
+# Preparing data in Prophet format
+#### Converting 'Date' column to a time series object
+
+data_prophet <- data.frame(ds = airbnb_stock$Date, y = airbnb_stock$Close)
+
+# Fitting Prophet model
+prophet_model <- prophet(data_prophet)
+
+# Making future dataframe for forecasting (i.e., next 365 days)
+future <- make_future_dataframe(prophet_model, periods = 365)
+
+# Forecast future values
+prophet_forecast <- predict(prophet_model, future)
+
+# Convert forecast data to a dataframe
+prophet_forecast_df <- data.frame(ds = prophet_forecast$ds, yhat = prophet_forecast$yhat, yhat_lower = prophet_forecast$yhat_lower, yhat_upper = prophet_forecast$yhat_upper)
+prophet_forecast_df$ds <- as.Date(prophet_forecast_df$ds)
+
+# Plot historical data and forecast with prediction intervals using ggplot2
+ggplot() +
+  geom_line(data = airbnb_stock, aes(x = Date, y = Close), color = "blue") +
+  geom_line(data = prophet_forecast_df, aes(x = ds, y = yhat), color = "red") +
+  geom_ribbon(data = prophet_forecast_df, aes(x = ds, ymin = yhat_lower, ymax = yhat_upper), fill = "pink", alpha = 0.3) +
+  labs(title = "Forecasted Airbnb Stock Prices",
+       x = "Date", y = "Closing Price") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.title = element_text(size = 14))
+
+
+
+## Evaluation of the forecasted model 
+# Calculate evaluation metrics
+prophet_mae <- mean(abs(prophet_forecast_df$yhat - airbnb_stock$Close))
+prophet_mse <- mean((prophet_forecast_df$yhat - airbnb_stock$Close)^2)
+prophet_rmse <- sqrt(mean((prophet_forecast_df$yhat - airbnb_stock$Close)^2))
+prophet_mape <- mean(abs((prophet_forecast_df$yhat - airbnb_stock$Close) / airbnb_stock$Close)) * 100
+
+```
+
+The evaluation metrics for the Prophet forecast model indicate reasonable accuracy in predicting Airbnb stock prices for the next 365 days. With a Mean Absolute Error (MAE) of 19.74, Mean Squared Error (MSE) of 832.70, Root Mean Squared Error (RMSE) of 28.86, and Mean Absolute Percentage Error (MAPE) of 12.52%, the model performed reasonably well overall. These metrics provide complementary insights into the accuracy and performance of the forecasted model. While the forecast model achieved relatively low values for all evaluation metrics, there may still be opportunities for further refinement or improvement. Continuously monitoring the forecast model's performance and evaluating its accuracy against actual data will be essential to identify any areas for improvement. 
+
+
+## Summary 
+This project aimed to forecast Airbnb stock prices using historical data spanning from 2010 to 2024. The dataset provided valuable insights into the performance of Airbnb's stock over time, including trends, volatility, and key milestones. The project focused on three main analytical objectives: trend analysis, seasonality analysis, and forecasting.
+
+First, the dataset was explored using R programming language, and exploratory data analysis (EDA) techniques were employed to gain insights into the underlying patterns and trends in Airbnb stock prices. The analysis revealed notable trends and seasonality in the data, laying the foundation for subsequent forecasting efforts.
+
+For forecasting, the Prophet forecasting model developed by Facebook was chosen for its ability to handle multiple seasonal and trend changes automatically. The model was trained on historical data and used to forecast Airbnb stock prices for the next 365 days. Evaluation metrics, including Mean Absolute Error (MAE), Mean Squared Error (MSE), Root Mean Squared Error (RMSE), and Mean Absolute Percentage Error (MAPE), were used to assess the accuracy and performance of the forecasted model.
+
+The Prophet forecast model demonstrated reasonable accuracy in predicting Airbnb stock prices, with low values for all evaluation metrics. 
+
+In conclusion, this project provided valuable insights into the forecasting of Airbnb stock prices, leveraging data analysis techniques and forecasting models to inform investment decisions and strategic planning. 
+
+
